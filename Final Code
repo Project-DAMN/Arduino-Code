@@ -1,0 +1,231 @@
+//Official Node Code
+//By: Alyssa Thurston
+
+/*Notes
+ * Everything you need to know is at one of the following links:
+ * GPS: https://learn.adafruit.com/adafruit-ultimate-gps-logger-shield/overview
+ * WiFi: https://learn.adafruit.com/adafruit-atwinc1500-wifi-module-breakout/wiring-and-test
+ * PM: https://learn.adafruit.com/pm25-air-quality-sensor/arduino-code
+*/
+
+#include <Adafruit_GPS.h>
+#include <SPI.h>
+#include <WiFi101.h> //for the wifi board
+#include <driver/source/nmasic.h> //driver
+#include <SoftwareSerial.h> //for the interfacing
+#include "secrets.h" //Stores the wifi connection information 
+
+//These are just variables
+#define gpsPort Serial1 
+#define pmPort Serial2
+#define GPSECHO  false
+
+//initializes the GPS Port
+Adafruit_GPS GPS(&gpsPort);
+
+//All things for the WiFi board, that get it to run
+//Be sure to enter connection information in secrets.h
+boolean usingInterrupt = false;
+int status = WL_IDLE_STATUS;
+char serverName[] = "projectaerodenton.com";
+WiFiClient client;
+
+//for the GPS
+void useInterrupt(boolean);
+
+//Initial Setup of everything
+void setup()
+{ 
+  WiFi.setPins(39,37,35); //Defines the pins to use for WiFi Shield, CS, IRQ, RST
+
+  //Wait for the connection to be ready
+  while (!Serial);
+
+  //Then begin
+  Serial.begin(9600);  
+  GPS.begin(9600);
+  pmPort.begin(9600);
+
+  if (WiFi.status() == WL_NO_SHIELD) { //Verifies that the shield is present
+    Serial.println("NOT PRESENT");
+  }
+
+  //Telling the GPS sensor what to do. 
+  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY); //for rmc only data
+  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ); //update at a 1hz rate
+
+  //Wait for the WiFi connection to begin before moving forward
+  while (WiFi.status() != WL_CONNECTED)
+  {
+      status = WiFi.begin(SSID, PASS); //Passes in the connection info from secrets.h
+      delay(10000);
+  }//while
+
+  Serial.println("Connected."); //Shows that the connection was successful
+
+  //Connects to the server
+  if (status = WL_CONNECTED){
+    Serial.println("Starting server connection.");
+    if (client.connect(serverName, 80)){
+      Serial.println("Connected.");
+    }//if
+  }//if
+}//setup
+
+//The following is information for the PM Sensor
+uint32_t timer = millis();
+
+struct pms5003data 
+{
+  uint16_t framelen;
+  uint16_t pm10_standard, pm25_standard, pm100_standard;
+  uint16_t pm10_env, pm25_env, pm100_env;
+  uint16_t particles_03um, particles_05um, particles_10um, particles_25um, particles_50um, particles_100um;
+  uint16_t unused;
+  uint16_t checksum;
+};//struct
+
+struct pms5003data data;
+
+
+//The following runs in an endless loop, is necessary for the Arduino to be functional.
+void loop()
+{  
+  if (! usingInterrupt) 
+  {
+    // read data from the GPS in the 'main loop'
+    char c = GPS.read();
+    if (GPSECHO)
+      if (c) Serial.print(c);
+  }//if
+  
+  // if a sentence is received, we can check the checksum, parse it...
+  if (GPS.newNMEAreceived()) 
+  {  
+    if (!GPS.parse(GPS.lastNMEA()))   // this also sets the newNMEAreceived() flag to false
+      return;  // we can fail to parse a sentence in which case we should just wait for another
+  }//if
+
+  // if millis() or timer wraps around, we'll just reset it
+  if (timer > millis())  timer = millis();
+
+  // approximately every 2 seconds or so, print out the current stats
+  if (millis() - timer > 2000) 
+  { 
+    timer = millis(); // reset the timer    
+
+    //If we have some coordinates, spit it out
+    if (GPS.fix) 
+    {
+      Serial.print("\nTime: ");
+      Serial.print(GPS.hour, DEC); 
+      Serial.print(':');
+      Serial.print(GPS.minute, DEC); 
+      Serial.print(':');
+      Serial.print(GPS.seconds, DEC); 
+      Serial.print('.');
+      Serial.println(GPS.milliseconds);
+      Serial.print("Date: ");
+      Serial.print(GPS.month, DEC); Serial.print('/');
+      Serial.print(GPS.day, DEC); Serial.print('/');    
+      Serial.println(GPS.year, DEC);
+      Serial.print("Location (in degrees, works with Google Maps): ");
+      Serial.print(GPS.latitudeDegrees, 4);
+      Serial.print(", "); 
+      Serial.println(GPS.longitudeDegrees, 4); 
+
+/* This is all code to write to the server. Was not able to get this to work due to the lack of an API
+      client.write("\nTime: ");
+      client.write(GPS.hour, DEC); 
+      client.write(':');
+      client.write(GPS.minute, DEC); 
+      client.write(':');
+      client.write(GPS.seconds, DEC); 
+      client.write('.');
+      client.write(GPS.milliseconds);
+      client.write("Date: ");
+      client.write(GPS.month, DEC); Serial.print('/');
+      client.write(GPS.day, DEC); Serial.print('/');    
+      client.write(GPS.year, DEC);
+      client.write("Location (in degrees, works with Google Maps): ");
+      client.write(GPS.latitudeDegrees, 4);
+      client.write(", "); 
+      client.write(GPS.longitudeDegrees, 4);
+*/
+    }//if       
+  }//if
+
+  //Spits out information from the PM Sensor
+  if (readPMSdata(&pmPort)) 
+  {
+    Serial.println("\nConcentration Units (environmental)");
+    Serial.print("PM 1.0: "); 
+    Serial.print(data.pm10_env);
+    Serial.print("\t\tPM 2.5: "); 
+    Serial.print(data.pm25_env);
+    Serial.print("\t\tPM 10: "); 
+    Serial.println(data.pm100_env);
+
+/* This is all code to write to the server. Was not able to get this to work due to the lack of an API
+    client.write("\nConcentration Units (environmental)");
+    client.write("PM 1.0: "); 
+    client.write(data.pm10_env);
+    client.write("\t\tPM 2.5: "); 
+    client.write(data.pm25_env);
+    client.write("\t\tPM 10: "); 
+    client.write(data.pm100_env);
+*/
+    
+    delay(2000);
+  }//if
+}//loop
+
+//This all reads the data from the PM Sensor
+boolean readPMSdata(Stream *s) {
+  if (! s->available()) {
+    return false;
+  }
+  
+  // Read a byte at a time until we get to the special '0x42' start-byte
+  if (s->peek() != 0x42) {
+    s->read();
+    return false;
+  }
+ 
+  // Now read all 32 bytes
+  if (s->available() < 32) {
+    return false;
+  }
+    
+  uint8_t buffer[32];    
+  uint16_t sum = 0;
+  s->readBytes(buffer, 32);
+ 
+  // get checksum ready
+  for (uint8_t i=0; i<30; i++) {
+    sum += buffer[i];
+  }
+ 
+  /* debugging
+  for (uint8_t i=2; i<32; i++) {
+    Serial.print("0x"); Serial.print(buffer[i], HEX); Serial.print(", ");
+  }
+  Serial.println();*/
+  
+  
+  // The data comes in endian'd, this solves it so it works on all platforms
+  uint16_t buffer_u16[15];
+  for (uint8_t i=0; i<15; i++) {
+    buffer_u16[i] = buffer[2 + i*2 + 1];
+    buffer_u16[i] += (buffer[2 + i*2] << 8);
+  }
+ 
+  // put it into a nice struct :)
+  memcpy((void *)&data, (void *)buffer_u16, 30);
+ 
+  if (sum != data.checksum) {
+    return false;
+  }
+  // success!
+  return true;
+}
